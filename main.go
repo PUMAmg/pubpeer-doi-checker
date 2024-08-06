@@ -58,7 +58,7 @@ type Pubpeer struct {
 }
 
 func main() {
-	fmt.Println("args:", os.Args[1:])
+	fmt.Println("Список файлов:", os.Args[1:])
 	for _, filename := range os.Args[1:] {
 		file, err := os.Open(filename)
 		if err != nil {
