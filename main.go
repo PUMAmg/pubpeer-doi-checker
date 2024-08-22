@@ -10,6 +10,10 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/eiannone/keyboard"
+	"github.com/fatih/color"
+	"github.com/gosuri/uilive"
 )
 
 type Pubpeer struct {
@@ -58,8 +62,60 @@ type Pubpeer struct {
 }
 
 func main() {
-	fmt.Println("Список файлов:", os.Args[1:])
-	for _, filename := range os.Args[1:] {
+	writer := uilive.New()
+	writer.Start()
+	defer writer.Stop()
+
+	if err := keyboard.Open(); err != nil {
+		panic(err)
+	}
+	defer func() {
+		_ = keyboard.Close()
+	}()
+
+	for {
+		fmt.Fprintf(writer, "Что проверяем? Введите цифру команды:\n1.Проверка на PubPeer по DOI\n2.Проверка SJR\nНажмите q для выхода\r\n")
+		char, _, err := keyboard.GetKey()
+		if err != nil {
+			panic(err)
+		}
+		switch char {
+		case '1':
+			for {
+				fmt.Fprintf(writer, "Вы выбрали проверку на PubPeer по DOI, для этого в папку с этой программой поместите файлы с DOI в формате txt. Нажмите 1 для продолжения\r\n")
+				char, _, err := keyboard.GetKey()
+				if err != nil {
+					panic(err)
+				}
+				if char == '1' {
+					PubPeerCheck(writer)
+					break
+				}
+			}
+		case '2':
+			for {
+				fmt.Fprintf(writer, "Вы выбрали проверку SJR, для этого в папку с программой поместите файлы со списком ISSN или названий журналов. Нажмите 2 для продолжения\r\n")
+				char, _, err := keyboard.GetKey()
+				if err != nil {
+					panic(err)
+				}
+				if char == '2' {
+					fmt.Fprintf(writer, "Тут пока ничего нет, возврат в меню.\r\n\n")
+					break
+				}
+			}
+		case 'q', 'Q', 'й', 'Й':
+			fmt.Fprintf(writer, "Выход\r\n")
+			return
+		}
+	}
+}
+
+func PubPeerCheck(writer *uilive.Writer) {
+	files := GetDOIFiles()
+	fmt.Fprintf(writer, "Список файлов: %s\r\n", files)
+
+	for _, filename := range files {
 		file, err := os.Open(filename)
 		if err != nil {
 			fmt.Println("Error:", err)
@@ -73,13 +129,19 @@ func main() {
 		buf := bytes.NewBufferString("")
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			doi := ReadDOI(scanner)
+			doi := scanner.Text()
 			time.Sleep(time.Second * 2)
-			str, err := CurlPubPeer(doi)
+			pubs, err := CurlPubPeer(doi)
 			if err != nil {
 				fmt.Println("Error get info from pubpeer:", err, "doi:", doi)
 				buf.Write([]byte(fmt.Sprintf("%s - error\n", doi)))
 				continue
+			}
+			var str string
+			if len(pubs.Publications) > 0 {
+				str = fmt.Sprintf("%s&да&%d&%s\n", strings.TrimSuffix(doi, "."), pubs.Publications[0].CommentsTotal, pubs.Publications[0].Title)
+			} else {
+				str = fmt.Sprintf("%s&нет\n", doi)
 			}
 			buf.Write([]byte(str))
 		}
@@ -91,34 +153,50 @@ func main() {
 		file.Close()
 		result.Close()
 	}
+	green := color.New(color.FgGreen)
+	green.Fprintf(writer, "Проверка завершена!\r\n\n")
 }
 
-func ReadDOI(scanner *bufio.Scanner) string {
-	return scanner.Text()
+func GetDOIFiles() []string {
+	files, err := os.ReadDir(".")
+	if err != nil {
+		fmt.Println("Error read dir:", err)
+		return nil
+	}
+	var DOIFiles []string
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".txt") {
+			if strings.HasSuffix(file.Name(), "result.txt") {
+				continue
+			}
+			DOIFiles = append(DOIFiles, file.Name())
+		}
+	}
+	return DOIFiles
 }
 
-func CurlPubPeer(doi string) (string, error) {
+func CurlPubPeer(doi string) (Pubpeer, error) {
 	var pubs Pubpeer
 	url := fmt.Sprintf("https://pubpeer.com/api/search/?q=%s", doi)
 	res, err := http.Get(url)
 	if err != nil {
 		fmt.Println("Error get req:", err)
-		return "", err
+		return pubs, err
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println("Error read body:", err)
-		return "", err
+		return pubs, err
 	}
 	err = json.Unmarshal(body, &pubs)
 	if err != nil {
 		fmt.Println("Error unmarshal body:", err)
-		return "", err
+		return pubs, err
 	}
-	if len(pubs.Publications) > 0 {
-		return fmt.Sprintf("%s&да&%d&%s\n", strings.TrimSuffix(doi, "."), pubs.Publications[0].CommentsTotal, pubs.Publications[0].Title), nil
+	if pubs.Publications == nil {
+		return pubs, fmt.Errorf("ошибка получения данных")
 	}
-	return fmt.Sprintf("%s&нет\n", doi), nil
+	return pubs, nil
 }
 
 func WriteFile(buf *bytes.Buffer, file *os.File) error {
